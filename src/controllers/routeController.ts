@@ -4,7 +4,7 @@ import { DistanceService } from '../services/distanceService';
 import routeRepository from '../repositories/routeRepository';
 import jobRepository from '../repositories/jobRepository';
 import technicianRepository from '../repositories/technicianRepository';
-import { RouteOptimizationRequest } from '../types';
+import { RouteOptimizationRequest, JobStatus, Vehicle, VehicleType } from '../types';
 
 const distanceService = new DistanceService(process.env.GOOGLE_MAPS_API_KEY || '');
 const routeOptimizer = new RouteOptimizer(distanceService);
@@ -23,7 +23,7 @@ export class RouteController {
       }
 
       // Get jobs
-      const allJobs = await jobRepository.findAll({ status: 'pending' });
+      const allJobs = await jobRepository.findAll({ status: JobStatus.PENDING });
       const jobs = jobIds
         ? allJobs.filter(j => jobIds.includes(j.id))
         : allJobs;
@@ -46,7 +46,7 @@ export class RouteController {
 
       // For now, we'll need to fetch vehicles separately
       // In a real implementation, add vehicle repository
-      const vehicles = []; // TODO: Implement vehicle fetching
+      const vehicles: Vehicle[] = []; // TODO: Implement vehicle fetching
 
       const optimizationRequest: RouteOptimizationRequest = {
         jobs,
@@ -54,7 +54,7 @@ export class RouteController {
         vehicles: vehicles.length > 0 ? vehicles : [{
           id: 'default-vehicle',
           name: 'Default Vehicle',
-          type: 'van' as any,
+          type: VehicleType.VAN,
           licensePlate: 'N/A',
           capacity: 1000,
           equipmentTypes: [],

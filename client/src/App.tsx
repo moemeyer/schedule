@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom'
+import { BrowserRouter as Router } from 'react-router-dom'
 import { MapPin, Users, Briefcase, TrendingUp } from 'lucide-react'
 import MapView from './components/MapView'
 import JobList from './components/JobList'

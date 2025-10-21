@@ -25,7 +25,7 @@ const jobIcon = new Icon({
 })
 
 export default function MapView() {
-  const [socket, setSocket] = useState<Socket | null>(null)
+  const [_socket, setSocket] = useState<Socket | null>(null)
   const [technicianLocations, setTechnicianLocations] = useState<Map<string, GPSUpdate>>(new Map())
 
   // Fetch technicians
