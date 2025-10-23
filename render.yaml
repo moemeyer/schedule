@@ -32,7 +32,7 @@ services:
         sync: false
 
   # PostgreSQL Database
-  - type: psgql
+  - type: postgres
     name: routing-db
     region: oregon
     plan: starter
