@@ -1,0 +1,253 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Intelligent Routing Service - Complete Infrastructure'
+
+Parameters:
+  KeyPairName:
+    Description: EC2 Key Pair for SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: Must be an existing EC2 Key Pair
+
+  DBPassword:
+    Description: PostgreSQL database password
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
+    AllowedPattern: '[a-zA-Z0-9]*'
+    ConstraintDescription: Must contain only alphanumeric characters
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t3.small
+    ConstraintDescription: Must be a valid EC2 instance type
+
+  GoogleMapsAPIKey:
+    Description: Google Maps API Key (optional)
+    Type: String
+    Default: ''
+    NoEcho: true
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0c7217cdde317cfec  # Ubuntu 22.04 LTS
+    us-west-2:
+      AMI: ami-0efcece6bed30fd98  # Ubuntu 22.04 LTS
+    eu-west-1:
+      AMI: ami-0905a3c97561e0b69  # Ubuntu 22.04 LTS
+
+Resources:
+  # Security Group
+  RoutingServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Routing Service
+      GroupName: routing-service-sg
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+      Tags:
+        - Key: Name
+          Value: routing-service-sg
+        - Key: Application
+          Value: IntelligentRoutingService
+
+  # EC2 Instance
+  RoutingServiceInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      SecurityGroupIds:
+        - !Ref RoutingServiceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: routing-service
+        - Key: Application
+          Value: IntelligentRoutingService
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+
+          # Log everything
+          exec > >(tee /var/log/user-data.log)
+          exec 2>&1
+
+          echo "Starting instance setup..."
+
+          # Update system
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+          # Install Node.js 18
+          curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+          apt-get install -y nodejs
+
+          # Install PostgreSQL 14 with PostGIS
+          apt-get install -y postgresql-14 postgresql-14-postgis-3
+
+          # Install Nginx
+          apt-get install -y nginx
+
+          # Install Git
+          apt-get install -y git
+
+          # Install PM2 globally
+          npm install -g pm2
+
+          # Configure PostgreSQL
+          sudo -u postgres psql << 'EOSQL'
+          CREATE DATABASE routing_db;
+          CREATE USER routing_user WITH ENCRYPTED PASSWORD '${DBPassword}';
+          GRANT ALL PRIVILEGES ON DATABASE routing_db TO routing_user;
+          \c routing_db
+          CREATE EXTENSION postgis;
+          CREATE EXTENSION "uuid-ossp";
+          GRANT ALL ON SCHEMA public TO routing_user;
+          EOSQL
+
+          # Clone repository as ubuntu user
+          cd /home/ubuntu
+          sudo -u ubuntu git clone https://github.com/moemeyer/schedule.git
+          cd schedule
+
+          # Install and build backend
+          sudo -u ubuntu npm ci --production
+          sudo -u ubuntu npm run build
+
+          # Install and build frontend
+          cd client
+          sudo -u ubuntu npm ci --production
+          sudo -u ubuntu npm run build
+          cd ..
+
+          # Create .env file
+          sudo -u ubuntu tee .env > /dev/null << EOF
+          NODE_ENV=production
+          PORT=3000
+          DB_HOST=localhost
+          DB_PORT=5432
+          DB_NAME=routing_db
+          DB_USER=routing_user
+          DB_PASSWORD=${DBPassword}
+          GOOGLE_MAPS_API_KEY=${GoogleMapsAPIKey}
+          CORS_ORIGIN=*
+          MAX_ROUTES_PER_DAY=50
+          MAX_STOPS_PER_ROUTE=25
+          DEFAULT_SERVICE_DURATION_MINUTES=60
+          GPS_UPDATE_INTERVAL_MS=30000
+          EOF
+
+          # Run database migrations
+          PGPASSWORD='${DBPassword}' psql -h localhost -U routing_user -d routing_db < src/database/schema.sql
+
+          # Start application with PM2
+          sudo -u ubuntu pm2 start dist/server.js --name routing-service
+          sudo -u ubuntu pm2 save
+
+          # Set PM2 to start on boot
+          env PATH=$PATH:/usr/bin pm2 startup systemd -u ubuntu --hp /home/ubuntu
+
+          # Configure Nginx
+          tee /etc/nginx/sites-available/routing-service > /dev/null << 'ENGINX'
+          server {
+              listen 80;
+              server_name _;
+
+              # Frontend
+              location / {
+                  root /home/ubuntu/schedule/client/dist;
+                  try_files $uri $uri/ /index.html;
+              }
+
+              # API
+              location /api {
+                  proxy_pass http://localhost:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection 'upgrade';
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+              }
+
+              # WebSocket
+              location /socket.io/ {
+                  proxy_pass http://localhost:3000;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+                  proxy_set_header Host $host;
+                  proxy_cache_bypass $http_upgrade;
+              }
+          }
+          ENGINX
+
+          ln -sf /etc/nginx/sites-available/routing-service /etc/nginx/sites-enabled/
+          rm -f /etc/nginx/sites-enabled/default
+          nginx -t
+          systemctl reload nginx
+
+          echo "Setup complete!" > /home/ubuntu/setup-complete.txt
+
+  # Elastic IP (optional - uncomment for static IP)
+  # RoutingServiceEIP:
+  #   Type: AWS::EC2::EIP
+  #   Properties:
+  #     InstanceId: !Ref RoutingServiceInstance
+  #     Tags:
+  #       - Key: Name
+  #         Value: routing-service-eip
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref RoutingServiceInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  PublicIP:
+    Description: Public IP Address
+    Value: !GetAtt RoutingServiceInstance.PublicIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicIP'
+
+  PublicDNS:
+    Description: Public DNS Name
+    Value: !GetAtt RoutingServiceInstance.PublicDnsName
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicDNS'
+
+  ApplicationURL:
+    Description: Application URL
+    Value: !Sub 'http://${RoutingServiceInstance.PublicIp}'
+    Export:
+      Name: !Sub '${AWS::StackName}-URL'
+
+  SSHCommand:
+    Description: SSH Command
+    Value: !Sub 'ssh -i ${KeyPairName}.pem ubuntu@${RoutingServiceInstance.PublicIp}'
+    Export:
+      Name: !Sub '${AWS::StackName}-SSHCommand'
