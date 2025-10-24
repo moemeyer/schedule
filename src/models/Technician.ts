@@ -7,19 +7,33 @@ export class TechnicianModel {
     const result = await pool.query(
       `INSERT INTO technicians (name, email, phone, skills, skill_level, current_location, status, vehicle_id)
        VALUES ($1, $2, $3, $4, $5, ST_SetSRID(ST_MakePoint($6, $7), 4326), $8, $9)
-       RETURNING *`,
+       RETURNING *,
+         ST_Y(current_location::geometry) as lat,
+         ST_X(current_location::geometry) as lng`,
       [name, email, phone, skills, skillLevel, currentLocation.longitude, currentLocation.latitude, status, vehicleId]
     );
     return this.mapRow(result.rows[0]);
   }
 
   static async findAll(): Promise<Technician[]> {
-    const result = await pool.query('SELECT * FROM technicians ORDER BY created_at DESC');
+    const result = await pool.query(`
+      SELECT *,
+        ST_Y(current_location::geometry) as lat,
+        ST_X(current_location::geometry) as lng
+      FROM technicians
+      ORDER BY created_at DESC
+    `);
     return result.rows.map(this.mapRow);
   }
 
   static async findById(id: string): Promise<Technician | null> {
-    const result = await pool.query('SELECT * FROM technicians WHERE id = $1', [id]);
+    const result = await pool.query(`
+      SELECT *,
+        ST_Y(current_location::geometry) as lat,
+        ST_X(current_location::geometry) as lng
+      FROM technicians
+      WHERE id = $1
+    `, [id]);
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
   }
 
@@ -43,7 +57,11 @@ export class TechnicianModel {
 
     values.push(id);
     const result = await pool.query(
-      `UPDATE technicians SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE technicians SET ${fields.join(', ')}, updated_at = NOW()
+       WHERE id = $${paramCount}
+       RETURNING *,
+         ST_Y(current_location::geometry) as lat,
+         ST_X(current_location::geometry) as lng`,
       values
     );
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
@@ -57,10 +75,10 @@ export class TechnicianModel {
       phone: row.phone,
       skills: row.skills || [],
       skillLevel: row.skill_level,
-      currentLocation: row.current_location ? {
-        latitude: row.current_location.coordinates[1],
-        longitude: row.current_location.coordinates[0]
-      } : { latitude: 0, longitude: 0 },
+      currentLocation: {
+        latitude: row.lat || 0,
+        longitude: row.lng || 0
+      },
       status: row.status,
       vehicleId: row.vehicle_id
     };

@@ -7,19 +7,33 @@ export class JobModel {
     const result = await pool.query(
       `INSERT INTO jobs (customer_id, service_type, location, address, scheduled_date, duration, priority, status, required_skills, notes)
        VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), $5, $6, $7, $8, $9, $10, $11)
-       RETURNING *`,
+       RETURNING *,
+         ST_Y(location::geometry) as lat,
+         ST_X(location::geometry) as lng`,
       [customerId, serviceType, location.longitude, location.latitude, location.address, scheduledDate, duration, priority, status, requiredSkills, notes]
     );
     return this.mapRow(result.rows[0]);
   }
 
   static async findAll(): Promise<Job[]> {
-    const result = await pool.query('SELECT * FROM jobs ORDER BY scheduled_date ASC');
+    const result = await pool.query(`
+      SELECT *,
+        ST_Y(location::geometry) as lat,
+        ST_X(location::geometry) as lng
+      FROM jobs
+      ORDER BY scheduled_date ASC
+    `);
     return result.rows.map(this.mapRow);
   }
 
   static async findById(id: string): Promise<Job | null> {
-    const result = await pool.query('SELECT * FROM jobs WHERE id = $1', [id]);
+    const result = await pool.query(`
+      SELECT *,
+        ST_Y(location::geometry) as lat,
+        ST_X(location::geometry) as lng
+      FROM jobs
+      WHERE id = $1
+    `, [id]);
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
   }
 
@@ -37,7 +51,11 @@ export class JobModel {
 
     values.push(id);
     const result = await pool.query(
-      `UPDATE jobs SET ${fields.join(', ')}, updated_at = NOW() WHERE id = $${paramCount} RETURNING *`,
+      `UPDATE jobs SET ${fields.join(', ')}, updated_at = NOW()
+       WHERE id = $${paramCount}
+       RETURNING *,
+         ST_Y(location::geometry) as lat,
+         ST_X(location::geometry) as lng`,
       values
     );
     return result.rows[0] ? this.mapRow(result.rows[0]) : null;
@@ -49,8 +67,8 @@ export class JobModel {
       customerId: row.customer_id,
       serviceType: row.service_type,
       location: {
-        latitude: row.location.coordinates[1],
-        longitude: row.location.coordinates[0],
+        latitude: row.lat || 0,
+        longitude: row.lng || 0,
         address: row.address
       },
       scheduledDate: row.scheduled_date,
